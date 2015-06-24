@@ -9,7 +9,8 @@ class Xml2As
     :integer => "Number",
     :float => "Number",
     :date => "Date",
-    :datetime => "Date"
+    :datetime => "Date",
+    :boolean => "Boolean"
   }
   
   def convert(filename,options ={}, out = STDOUT)
@@ -17,31 +18,45 @@ class Xml2As
     doc = Document.new(file)
     options[:from_xml_return_var] = "#{options[:class_name].downcase}" unless options[:from_xml_return_var]
     options[:from_xml_xml_param] = "#{options[:class_name].downcase}XML" unless options[:from_xml_xml_param]
-    from_xml = ""
+    from_xml,to_xml = "",""
     doc.root.elements.each do |elem|
-      convert_elem(elem,from_xml,options,out)
+      convert_elem(elem,from_xml,to_xml,options,out) unless get_as_name(elem.name) == "id"
     end
     from_xml_method = <<-EOM
     
     public static function fromXML(#{options[:from_xml_xml_param]}:XML):#{options[:class_name]}{
       var #{options[:from_xml_return_var]}:#{options[:class_name]} = null;
       if(#{options[:from_xml_xml_param]}.hasComplexContent()){                 
-        #{options[:from_xml_return_var]} = new #{options[:class_name]}();
+        #{options[:from_xml_return_var]} = new #{options[:class_name]}(Number(#{options[:from_xml_xml_param]}.id));
 #{from_xml}
       }
+      return #{options[:from_xml_return_var]}
     }
     EOM
     out << from_xml_method
+    
+    to_xml_method = <<-EOM
+
+    public function toXML(root:String = "#{options[:from_xml_return_var]}"):XML{
+          var xml:XML =
+            <{root}>
+              #{to_xml}
+            </{root}>      
+      return xml;
+    }
+    EOM
+     out << to_xml_method
   end  
     
   private
   
-  def convert_elem(elem , from_xml, options,out)
+  def convert_elem(elem , from_xml, to_xml, options,out)
     if(elem)
       attribute_type = get_attribute_type(elem.attributes["type"])
       as_name = get_as_name(elem.name)      
       out << getter_setters(as_name,AS_TYPES_MAP[attribute_type])
       from_xml << from_xml_method_content(elem.name,as_name,attribute_type,options)
+      to_xml << to_xml_method_content(elem.name,as_name,attribute_type,options)
     end
   end
     
@@ -70,17 +85,45 @@ class Xml2As
   def from_xml_method_content(element_name,as_name,as_type,options)
     # value = "#{options[:from_xml_xml_param]}.child(\"#{element_name}\").valueOf()"    
     value = "#{options[:from_xml_xml_param]}.#{element_name}"    
-    template = <<-EOT
+    template = <<-EOT    
         #{options[:from_xml_return_var]}.#{as_name} = #{cast_xml_value(as_type,value)}    
+    EOT
+    if(as_type == :date)
+      template = "if(!StringUtils.isBlank(#{value}))\n#{template}"
+    end
+    template
+  end
+  
+  #append the line to set the property in the toXML method
+  # @param as_name : property name (setter/getter)
+  # @param as_type : property AS type (Number, Date, ...)
+  def to_xml_method_content(element_name,as_name,as_type,options)
+    template = <<-EOT
+    <#{element_name}>{#{cast_as_value(as_type,as_name)}}</#{element_name}>
     EOT
     template
   end
   
+  
+  #cast the as value to xml object 
+  def cast_as_value(as_type,as_property)
+   if(as_type == :date)
+     return "XMLUtils.dateToXML(#{as_property})"
+   elsif(as_type == :datetime)
+       return "TolDateUtils.toTimeParam(#{as_property})"
+   else
+     return as_property
+   end
+  end 
+ 
+  #cast the xml value to as object
   def cast_xml_value(as_type,value)
     if(as_type == :date)
       return "XMLUtils.xmlListToDate(#{value});"
     elsif(as_type == :datetime)
         return "DateUtil.parseW3CDTF(#{value}.toString());"
+    elsif(as_type == :boolean)
+        return "XMLUtils.xmlListToBoolean(#{value});"    
     elsif(as_type == :integer or as_type == :float)
         return "Number(#{value});"
     end
@@ -118,9 +161,8 @@ end
 class String
   def first(limit = 1)
     self[0..(limit - 1)]
-  end
-  
+  end  
 end
 
 parser = Xml2As.new
-parser.convert("./admin/informations2.xml",{:class_name => "RestaurantInfo",:from_xml_xml_param => "infoXML", :from_xml_return_var => "info"})
+parser.convert("./admin/restaurant_translation.xml", :class_name => "RestaurantTranslation")
